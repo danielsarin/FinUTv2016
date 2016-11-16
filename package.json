@@ -1,0 +1,15 @@
+{
+  "name": "ut2016",
+  "version": "0.0.1",
+  "description": "",
+  "main": "parser.js",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "jsdom": "^9.8.3",
+    "xmlbuilder": "^8.2.2"
+  }
+}
