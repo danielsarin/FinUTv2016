@@ -1,7 +1,5 @@
-'use strict';
-
 const fs = require('fs');
-const jsdom = require("jsdom");
+const jsdom = require('jsdom');
 
 // osis ids
 const osisIDs = [
@@ -13,8 +11,8 @@ const osisIDs = [
 // name of translation
 // NOTE: update mods.d/*.conf if you change these (and file names)
 const refSystem = 'Luther';
-const translationCode = 'FinUTv2016';
-const translationTitle = 'Uusi Testamentti suomeksi 2016';
+const translationCode = 'FinUTv2019';
+const translationTitle = 'Uusi Testamentti suomeksi 2019';
 
 
 
@@ -54,17 +52,27 @@ xml += '<title>Uusi Testamentti</title>';
 
 
 // define variables for parsing
+let bookWaiting = false;
+let majorSectionWaiting = false;
+let sectionWaiting = false;
+let parallelReferenceWaiting = false;
+let chapterWaiting = false;
+let paragraphWaiting = false;
+let boldWaiting = false;
+let verseWaiting = false;
+
 let bookIndex = 0;
-let bookOpened = false;
 let chapterIndex = 0;
-let chapterOpened = false;
 let verseIndex = 0;
-let verseOpened = false;
-let majorSectionWaiting = '';
-let sectionWaiting = '';
-let parallelReferenceWaiting = '';
+
+let bookOpened = false;
+let chapterOpened = false;
 let paragraphOpened = false;
-let currentParagraph = null;
+let verseOpened = false;
+
+let pendingSections = '';
+
+let john752SpecialCase = false;
 
 
 // NOTE: It is probably not semantically correct to close the section
@@ -74,40 +82,48 @@ let currentParagraph = null;
 // the section title inside the chapter. So...let's just make things
 // easier by closing the elements, at least for now.
 const addMajorSection = (text) => {
-  xml += '<div type="majorSection">';
-  xml += `<title>${text}</title>`;
-  xml += '</div>';
+  pendingSections += '<div type="majorSection">';
+  pendingSections += `<title>${text}</title>`;
+  pendingSections += '</div>';
 };
 
 const addSection = (text) => {
-  xml += '<div type="section">';
-  xml += `<title>${text}</title>`;
-  xml += '</div>';
+  pendingSections += '<div type="section">';
+  pendingSections += `<title>${text}</title>`;
+  pendingSections += '</div>';
 };
 
 const addParallelReference = (text) => {
   // insert inside section element
-  xml = xml.slice(0, -6) +
-    `<title type="parallel">${text}</title>` + xml.slice(-6);
+  pendingSections = pendingSections.slice(0, -6) +
+    `<title type="parallel">${text}</title>` + pendingSections.slice(-6);
 };
+
+const addBold = (text) => {
+  if (bookOpened) {
+    if (pendingSections) {
+      xml += pendingSections;
+      pendingSections = '';
+    }
+
+    xml += `<b>${text}</b>`;
+  }
+}
+
+const addText = (text) => {
+  if (pendingSections) {
+    xml += pendingSections;
+    pendingSections = '';
+  }
+
+  xml += text;
+}
 
 const openChapter = () => {
   chapterIndex++;
   chapterOpened = true;
   const chapterAbbr = `${osisIDs[bookIndex - 1]}.${chapterIndex}`;
   xml += `<chapter sID="${chapterAbbr}" osisID="${chapterAbbr}"/>`;
-  if (majorSectionWaiting) {
-    addMajorSection(majorSectionWaiting);
-    majorSectionWaiting = '';
-  }
-  if (sectionWaiting) {
-    addSection(sectionWaiting);
-    sectionWaiting = '';
-  }
-  if (parallelReferenceWaiting) {
-    addParallelReference(parallelReferenceWaiting);
-    parallelReferenceWaiting = '';
-  }
 };
 
 const closeChapter = () => {
@@ -120,16 +136,26 @@ const closeChapter = () => {
 };
 
 const openVerse = () => {
-  verseIndex++;
+  if (pendingSections) {
+    xml += pendingSections;
+    pendingSections = '';
+  }
+
+  if (!john752SpecialCase) verseIndex++;
   verseOpened = true;
-  const verseAbbr = `${osisIDs[bookIndex - 1]}.${chapterIndex}.${verseIndex}`;
+  let verseAbbr = `${osisIDs[bookIndex - 1]}.${chapterIndex}.${verseIndex}`;
+  if (john752SpecialCase) verseAbbr = 'John.7.53';
   xml += `<verse sID="${verseAbbr}" osisID="${verseAbbr}"/>`;
 };
 
 const closeVerse = () => {
   if (verseOpened) {
     verseOpened = false;
-    const verseAbbr = `${osisIDs[bookIndex - 1]}.${chapterIndex}.${verseIndex}`;
+    let verseAbbr = `${osisIDs[bookIndex - 1]}.${chapterIndex}.${verseIndex}`;
+    if (john752SpecialCase) {
+      john752SpecialCase = false;
+      verseAbbr = 'John.7.53';
+    }
     xml += `<verse eID="${verseAbbr}"/>`;
   }
 };
@@ -151,7 +177,6 @@ const closeBook = () => {
 const openParagraph = (el) => {
   if (!paragraphOpened) {
     paragraphOpened = true;
-    currentParagraph = el;
     xml += '<p>';
   }
 };
@@ -159,182 +184,143 @@ const openParagraph = (el) => {
 const closeParagraph = () => {
   if (paragraphOpened) {
     paragraphOpened = false;
-    if (xml.slice(-3) === '<p>') {
-      // remove empty paragraphs
-      xml = xml.slice(0, -3);
-    } else {
-      xml += '</p>';
+    xml += '</p>';
+  }
+};
+
+
+const parseNode = (node) => {
+  if (node.nodeType === 3) {
+    const text = node.textContent.trim().replace('\n', ' ');
+    if (text) {
+      if (bookWaiting) {
+        bookWaiting = false;
+        closeVerse();
+        closeParagraph();
+        closeChapter();
+        closeBook();
+        openBook(text);
+      } else if (majorSectionWaiting) {
+        majorSectionWaiting = false;
+        closeParagraph();
+        addMajorSection(text);
+      } else if (sectionWaiting) {
+        sectionWaiting = false;
+        closeParagraph();
+        addSection(text);
+      } else if (parallelReferenceWaiting) {
+        parallelReferenceWaiting = false;
+        addParallelReference(text);
+      } else if (chapterWaiting) {
+        chapterWaiting = false;
+        boldWaiting = false;
+        closeVerse();
+        closeChapter();
+        openChapter(text);
+      } else if (verseWaiting) {
+        verseWaiting = false;
+        // open chapter if not opened, this happens for books with a single chapter
+        if (!chapterOpened) openChapter();
+        closeVerse();
+        openVerse();
+      } else if (boldWaiting) {
+        boldWaiting = false;
+        if (verseOpened) {
+          if (paragraphWaiting) {
+            paragraphWaiting = false;
+            openParagraph();
+          }
+          addBold(text);
+        }
+      } else if (bookOpened) {
+        if (paragraphWaiting) {
+          paragraphWaiting = false;
+          openParagraph();
+        }
+        addText(text);
+      }
+    }
+  } else if (node.nodeType === 1) {
+    const isParagraph = node.tagName === 'P';
+    const isBold = node.tagName === 'B';
+    const color = node.getAttribute('color');
+    const size = node.getAttribute('size');
+    const style = node.getAttribute('style');
+    const hasBoldChild = node.childNodes[0] && node.childNodes[0].tagName === 'B';
+
+    if (size === '2' && style === 'font-size: 11pt') {
+      bookWaiting = true;
+    } else if (size === '2' && style === 'font-size: 9pt' && !hasBoldChild) {
+      majorSectionWaiting = true
+    } else if (size === '2' && style === 'font-size: 9pt' && hasBoldChild) {
+      sectionWaiting = true;
+    } else if (size === '1' && style === 'font-size: 8pt') {
+      parallelReferenceWaiting = true;
+    } else if (size === '4' && style === 'font-size: 14pt') {
+      chapterWaiting = true;
+    } else if (isBold) {
+      boldWaiting = true;
+    } else if (isParagraph) {
+      closeParagraph();
+      paragraphWaiting = true;
+    } else if (size === '1' && style === 'font-size: 5pt') {
+      verseWaiting = true;
+      if (bookIndex === 4 && chapterIndex === 8 && verseIndex === 0) {
+        john752SpecialCase = true;
+      }
+    }
+
+    if (node.childNodes && node.childNodes.length) {
+      for (let i = 0; i < node.childNodes.length; i++) {
+        parseNode(node.childNodes[i]);
+      }
     }
   }
 };
 
-const getClosestParagraph = (el) => {
-  while ((el = el.parentElement) && !el.classList.contains('MsoBodyText'));
-    return el;
-};
-
 
 // read html
-fs.readFile(__dirname + '/FinUTv2016.html', (err, data) => {
-  // parse html
-  jsdom.env({
-    html: data,
-    done: (err, window) => {
+console.log('Parsing html file...');
+try {
+  fs.readFile(__dirname + '/dist/bible.html', (err, data) => {
+    // parse html
+    const { JSDOM } = jsdom;
+    const { document } = new JSDOM(data).window;
+  
+    // get elements with text content
+    const elements = document.querySelectorAll('*');
+    const elementsLength = elements.length;
+
+    parseNode(document.body);
+  
+    closeVerse();
+    closeParagraph();
+    closeChapter();
+    closeBook();
+  
+  
+  
+    // close bookGroup
+    xml += '</div>';
+  
+    // close osisText
+    xml += '</osisText>';
+  
+    // close osis
+    xml += '</osis>';
+  
+    // write file
+    fs.writeFile(__dirname + '/dist/bible.xml', xml, err => {
       if (err) {
         console.log(err);
         return;
       }
-
-      // get elements with text content
-      const document = window.document;
-      const elements = document.querySelectorAll('[lang="FI"]');
-      const elementsLength = elements.length;
-
-      for (let i = 0; i < elementsLength; i++) {
-        const el = elements[i];
-        const elParent = el.parentElement;
-        const elParentClass = elParent.className;
-
-        const nextParent = elParent.nextElementSibling;
-        const nextParentChild = nextParent ?
-          nextParent.children[0] : null;
-        const nextNextParent = nextParent ?
-          nextParent.nextElementSibling : null;
-        const nextNextParentChild = nextNextParent ?
-          nextNextParent.children[0] : null;
-        const next3Parent = nextNextParent ?
-          nextNextParent.nextElementSibling : null;
-        const next3ParentChild = next3Parent ?
-          next3Parent.children[0] : null;
-
-        switch (elParentClass) {
-
-          // new book
-          case 'Kirjannimi':
-            closeVerse();
-            closeParagraph();
-            closeChapter();
-            closeBook();
-            openBook(el.textContent);
-            break;
-
-          // chapter number
-          case 'Lukunumero':
-            closeVerse();
-            if (currentParagraph && currentParagraph !== getClosestParagraph(el)) {
-              closeParagraph();
-            }
-            closeChapter();
-            openChapter();
-            break;
-
-          // verse number
-          case 'Jaenumero':
-            // open chapter if not opened
-            // this happens for books with a single chapter
-            if (!chapterOpened) {
-              openChapter();
-            }
-            closeVerse();
-            if (currentParagraph && currentParagraph !== getClosestParagraph(el)) {
-              closeParagraph();
-            }
-            if ((currentParagraph !== getClosestParagraph(el)) ||
-                (!currentParagraph && bookOpened)) {
-              openParagraph(getClosestParagraph(el));
-            }
-            openVerse();
-            break;
-
-          // major section
-          case 'Vliotsikko2':
-            closeVerse();
-            closeParagraph();
-            if (!chapterOpened ||
-                nextParentChild.className === 'Lukunumero' ||
-                (nextParent.className === 'Vliotsikko3' &&
-                nextNextParentChild.className === 'Lukunumero') ||
-                (nextParent.className === 'Vliotsikko3synoptinen' &&
-                nextNextParentChild.className === 'Lukunumero') ||
-                (nextParent.className === 'Vliotsikko3synoptineneo' &&
-                nextNextParentChild.className === 'Lukunumero') ||
-                (nextParent.className === 'Vliotsikko3synoptinen' &&
-                nextNextParent.className === 'Synoptinenviite' &&
-                next3ParentChild.className === 'Lukunumero') ||
-                (nextParent.className === 'Vliotsikko3synoptineneo' &&
-                nextNextParent.className === 'Synoptinenviite' &&
-                next3ParentChild.className === 'Lukunumero')) {
-              majorSectionWaiting = el.textContent;
-            } else {
-              addMajorSection(el.textContent);
-            }
-            break;
-
-          // section
-          case 'Vliotsikko3':
-          case 'Vliotsikko3synoptinen':
-          case 'Vliotsikko3synoptineneo':
-            closeVerse();
-            closeParagraph();
-            if (!chapterOpened ||
-                nextParentChild.className === 'Lukunumero' ||
-                (nextParent.className === 'Synoptinenviite' &&
-                nextNextParentChild.className === 'Lukunumero')) {
-              sectionWaiting = el.textContent;
-            } else {
-              addSection(el.textContent);
-            }
-            break;
-
-          // parallel reference
-          case 'Synoptinenviite':
-            if (!chapterOpened || nextParentChild.className === 'Lukunumero') {
-              parallelReferenceWaiting = el.textContent;
-            } else {
-              addParallelReference(el.textContent);
-            }
-            break;
-
-          // text
-          default:
-            if (currentParagraph && currentParagraph !== getClosestParagraph(el)) {
-              closeParagraph();
-              openParagraph(getClosestParagraph(el));
-            }
-            if (verseOpened) {
-              // remove underscores and add text
-              xml += el.textContent.replace(/_/g, '');
-            }
-            break;
-        }
-      }
-
-      closeVerse();
-      closeParagraph();
-      closeChapter();
-      closeBook();
-
-
-
-      // close bookGroup
-      xml += '</div>';
-
-      // close osisText
-      xml += '</osisText>';
-
-      // close osis
-      xml += '</osis>';
-
-      // write file
-      fs.writeFile(__dirname + '/dist/FinUTv2016.xml', xml, err => {
-        if (err) {
-          console.log(err);
-          return;
-        }
-
-        console.log('Success! Osis file created.');
-      });
-
-    }
+  
+      console.log('Success! Osis xml file created.');
+    });
   });
-});
+} catch (err) {
+  console.log(err);
+  return;
+}
+

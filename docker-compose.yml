@@ -1,0 +1,12 @@
+version: '3'
+services:
+  parser:
+    build: .
+    command: >
+      sh -c "libreoffice --headless --convert-to html:HTML /usr/app/bible.doc --outdir /usr/app/dist &&
+      node parser.js &&
+      ./build.sh"
+    volumes:
+      - .:/usr/app/
+      - ./dist:/usr/app/dist
+      - /usr/app/node_modules
